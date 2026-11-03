@@ -1,0 +1,74 @@
+name: Sistema 24-7 (16GB RAM + 100GB SSD)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  build:
+    name: Servidor 16GB RAM 4 CPUs
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. Carregar Arquivos Salvos
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 2. Liberar +100GB de Espaco no SSD
+        run: |
+          Write-Host "Limpando programas inuteis para liberar mais de 100GB no Disco C..."
+          Remove-Item -Path "C:\hostedtoolcache" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Android" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Program Files\dotnet" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Program Files\MongoDB" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\mysql" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Program Files\Microsoft SDKs" -Recurse -Force -ErrorAction SilentlyContinue
+          Get-PSDrive C
+
+      - name: 3. Ativar Tela Remota (RDP) e Conectar Tailscale
+        env:
+          TS_KEY: ${{ secrets.TAILSCALE_KEY }}
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          net user runneradmin SenhaForte123!
+
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale.exe"
+          Start-Process -FilePath ".\tailscale.exe" -ArgumentList "/quiet" -Wait
+          Start-Sleep -Seconds 5
+
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TS_KEY" --hostname="pc-virtual" --unattended
+          Start-Sleep -Seconds 5
+          Write-Host "VM Conectada ao Tailscale com Sucesso! Nome na rede: pc-virtual"
+
+      - name: 4. Abrir Programas Automaticamente (Pasta Persistente)
+        run: |
+          if (!(Test-Path ".\meus_arquivos")) { New-Item -ItemType Directory -Path ".\meus_arquivos" }
+          if (Test-Path ".\meus_arquivos\iniciar.bat") {
+            Start-Process -FilePath ".\meus_arquivos\iniciar.bat" -WorkingDirectory ".\meus_arquivos"
+          }
+
+      - name: 5. Manter Ligado (Ciclo de 5h e 45m)
+        run: Start-Sleep -Seconds 20700
+
+      - name: 6. Salvar Arquivos da Pasta 'meus_arquivos' Automaticamente
+        if: always()
+        run: |
+          git config --global user.name "AutoSave Bot"
+          git config --global user.email "bot@users.noreply.github.com"
+          git add ./meus_arquivos/*
+          git commit -m "Backup automatico 24-7" || Write-Host "Sem arquivos novos para salvar"
+          git push
+
+      - name: 7. Reiniciar Automaticamente (Loop Infinito 24-7)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & "C:\Program Files\Tailscale\tailscale.exe" logout
+          gh workflow run "vm-24-7.yml" --ref ${{ github.ref_name }}
